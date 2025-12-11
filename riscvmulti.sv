@@ -10,12 +10,48 @@ module riscvmulti (
 
     logic [31:0] instr, PC = 0;
 
-    wire writeBackEn = // Quando se escreve no banco de registradores?
-    wire [31:0] writeBackData = // O que se escreve no banco de registradores?
-    wire [31:0] LoadStoreAddress = // Como se calcula o endereço de memória para loads e stores?
-    assign Address = // Qual o endereço de memória a ser acessado? Alternar entre .text e .data dependendo do estado
-    assign MemWrite = // Em que estado se escreve na memória?
-    assign WriteData = // O que se escreve na memória?
+    wire writeBackEn = (state == EXECUTE && !isBranch && !isStore) || (state == WAIT_DATA);
+    wire [31:0] writeBackData = (isJAL | isJALR) ? PCplus4   :
+                                         isLUI   ? Uimm      :
+                                         isAUIPC ? PCTarget  :
+                                         isLoad  ? LOAD_data  :
+                                                   ALUResult ;
+    wire [31:0] LoadStoreAddress = rs1 + (isStore ? Simm : Iimm);
+    assign Address = (state == WAIT_INSTR || state == FETCH_INSTR) ? PC : LoadStoreAddress ;
+    assign MemWrite = (state == STORE);
+    assign WriteMask = {4{(state == STORE)}} & STORE_wmask;
+    wire mem_byteAccess     = funct3[1:0] == 2'b00;
+    wire mem_halfwordAccess = funct3[1:0] == 2'b01;
+
+    wire [15:0] LOAD_halfword =
+	       LoadStoreAddress[1] ? ReadData[31:16] : ReadData[15:0];
+
+   wire  [7:0] LOAD_byte =
+	       LoadStoreAddress[0] ? LOAD_halfword[15:8] : LOAD_halfword[7:0];
+   // LOAD, in addition to funct3[1:0], LOAD depends on:
+   // - funct3[2] (instr[14]): 0->do sign expansion   1->no sign expansion
+   wire LOAD_sign =
+	!funct3[2] & (mem_byteAccess ? LOAD_byte[7] : LOAD_halfword[15]);
+
+   wire [31:0] LOAD_data =
+         mem_byteAccess ? {{24{LOAD_sign}},     LOAD_byte} :
+     mem_halfwordAccess ? {{16{LOAD_sign}}, LOAD_halfword} :
+                          ReadData ;
+
+   assign WriteData[ 7: 0] = rs2[7:0];
+   assign WriteData[15: 8] = LoadStoreAddress[0] ? rs2[ 7:0]  : rs2[15: 8];
+   assign WriteData[23:16] = LoadStoreAddress[1] ? rs2[ 7:0]  : rs2[23:16];
+   assign WriteData[31:24] = LoadStoreAddress[0] ? rs2[ 7:0]  :
+			                 LoadStoreAddress[1] ? rs2[15:8]  : rs2[31:24];
+
+    wire [3:0] STORE_wmask =
+	      mem_byteAccess      ?
+	            (LoadStoreAddress[1] ?
+		          (LoadStoreAddress[0] ? 4'b1000 : 4'b0100) :
+		          (LoadStoreAddress[0] ? 4'b0010 : 4'b0001)) :
+	      mem_halfwordAccess ?
+	            (LoadStoreAddress[1] ? 4'b1100 : 4'b0011) :
+              4'b1111;
 
     // The 10 RISC-V instructions
     wire isALUreg  =  (instr[6:0] == 7'b0110011); // rd <- rs1 OP rs2   
